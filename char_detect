@@ -1,8 +1,8 @@
 library(imager)
 library(tibble)
 library(writexl)
-library(compiler) # в одной ячейке 25 пикселей. в одном пикселе 5 микрон. но снижаем разрешение в 4 раза. значит,
-library(EBImage)   # в одном px 20 микрон. частицы менее 315 мкм не использовать
+library(compiler) 
+library(EBImage)   
 library(foreach)
 library(doParallel)
 library(stringr)
@@ -10,151 +10,186 @@ library(compiler)
 library(zoo)
 library(parallel)
 library(dplyr)
-#library(tidyverse)
-# filter boundary
-# radius vpisannoi
 library(contoureR)
 library(spatstat.geom)
 
-
-red_bond = function(img_data){
-  red_boundary = mutate(img_data, RandG = (img_data$red > (img_data$green * 1.8)  #  & img_data$red > 0.25 & img_data$green < 0.5)
-                                           & img_data$red > 0.5 & img_data$green < 0.5 ))#0.25 оставить только в 2 раза меньше красного?
-  red_boundary = dplyr::filter(red_boundary, RandG == T)
-  red_boundary = mutate(red_boundary, boundary = red_boundary$red > red_boundary$blue * 1.35)#0.02
-  red_boundary = dplyr::filter(red_boundary, boundary == T)
-  red_boundary = red_boundary[,c(-6,-7)]
-  return(red_boundary)
-}
-#cut grubo 
-grubo_obrez = function(red_boundary, img_data){
-  min_redX = min(red_boundary$x)
-  max_redX = max(red_boundary$x)
-  min_redY = min(red_boundary$y)
-  max_redY = max(red_boundary$y)
-  img_data = dplyr::filter(img_data, img_data$x > min_redX, img_data$x < max_redX, 
-                           img_data$y > min_redY, img_data$y < max_redY)
-  return(img_data)
-}
-# obrez
-obrez = function(red_boundary, img_data){
-  img_data_obrez_list = list()
-  for (i in unique(red_boundary$x)){
-    date_minmax = red_boundary[red_boundary$x == i,]
-    minY = min(date_minmax$y)
-    maxY = max(date_minmax$y)
-    col_img_data = list(tibble(x = i, y = seq(from = minY, to = maxY), red = NA, green = NA, blue = NA))
-    img_data_obrez_list = append(img_data_obrez_list, col_img_data)
+##
+simple_char = function(img.path, red.border, green.border, red.char, green.char, size.blur, cl){
+  name_images = (list.files(img.path, full.names = TRUE)) # name of puti
+  name_images = str_sort(name_images, numeric = TRUE)
+  name_of_image = (list.files(img.path, full.names = FALSE))
+  name_of_image = as.numeric(gsub('.*?([0-9]+).*', '\\1', name_of_image)) %>% 
+    sort()
+  
+  ###
+  red_bond = function(img_data, red.border, green.border){
+    red_boundary = mutate(img_data, RandG = (img_data$red > (img_data$green * 1.8)  
+                                             & img_data$red > red.border & 
+                                               img_data$green < green.border ))
+    red_boundary = dplyr::filter(red_boundary, RandG == T)
+    red_boundary = mutate(red_boundary, boundary = red_boundary$red > red_boundary$blue * 1.35)#0.02
+    red_boundary = dplyr::filter(red_boundary, boundary == T)
+    red_boundary = red_boundary[,c(-6,-7)]
+    return(red_boundary)
   }
-  img_data_obrez = as.data.frame(do.call(rbind, img_data_obrez_list))
-  img_data_obrez = semi_join(img_data, img_data_obrez, by = c('x','y'))
-  img_data_obrez = anti_join(img_data_obrez, red_boundary, by = c('x','y'))
-  return(img_data_obrez)
-} 
-# new for circle
-radius_area_diam = function(a){
-  aa = data.frame(x = c(a[,1]),
-                  y = c(a[,2]))
-  aa_2 = orderPoints(x = aa$x, y = aa$y, clockwise = F)
-  aa = aa[aa_2, ]
-  w = owin(poly = aa)
-  min_charR = incircle(w)$r
-  max_charR = boundingradius(w)
-  diam = diameter(w)
-  area_char = area(w)
-  data_exp = data.frame(min_charR = min_charR, max_charR = max_charR, diam = diam,
-                        area_char = area_char)
-  return(data_exp)
-}
-
-# obolochka detected and cut 
-cut_and_detected = function(img_data){
-  img_del = max(img_data$x) * max(img_data$y)
-  img_data = tibble(x = img_data$x[1 : img_del], y = img_data$y[1 : img_del], red = img_data$value[1 : img_del], 
-                    green = img_data$value[(img_del + 1) : (img_del * 2)], 
-                    blue = img_data$value[(img_del * 2 + 1) : (img_del * 3)])
-  remove(img_del)
-  ### data cutting
-  red_boundary = red_bond(img_data)
-  
-  img_data = grubo_obrez(red_boundary, img_data)
-  
-  img_data = obrez(red_boundary, img_data)
-  remove(red_boundary)
-  
-  ### char detected
-  # moving average
-  img_data = mutate(img_data, meanRGcolor = (rollmean(img_data$red, 100, na.pad = T) 
-                                             + rollmean(img_data$green, 100, na.pad = T))/2)
-  #char detected
-  img_data_char = transmute(img_data, x = img_data$x, y = img_data$y, 
-                            charcoal = ifelse(img_data$red < 0.23 & img_data$green < 0.23 & meanRGcolor < 99 |
-                                                img_data$red < 0.23 & img_data$green < 0.23 & meanRGcolor >= 99,
-                                              yes = 1, no = 0))
-  img_data_char = na.omit(img_data_char)
-  
-  img_data_char_i = as.cimg(img_data_char, v.name = 'charcoal')
-  img_data_char_i = fillHull(img_data_char_i)
-  
-  labels=bwlabel(img_data_char_i)
-  # по окружностям более точный подход
-  a = ocontour(labels) # контур
-  a = a[lapply(a, function(z) length(z)) > 3]
-  a = a[lapply(a, function(z) sum(z[,1])) > 0]
-  a = a[lapply(a, function(z) sum(length(unique(z[,2])))) > 1]
-  a = a[lapply(a, function(z) sum(length(unique(z[,1])))) > 1]
-  k = lapply(a, function(z) radius_area_diam(z))
-  labels =  as.data.frame(do.call(rbind, k))
-  # старая часть
-  #labels = as.matrix(labels) # менять отсюда надо
-  #labels = computeFeatures.shape(labels)
-  #labels = data.frame(labels)
-  return(labels)#labels_matrix  img_data_char_i
-}
-
-char_detected = function(img){
-  img <- resize(img,round(width(img)/1),round(height(img)/1))
-  img = medianblur(img, 3, threshold = 50)
-  img_data = as.data.frame(img)
-  ugol = cut_and_detected(img_data)
-}
-
-char_detected_tryCatch <- function(img){
-  tryCatch(
-    {
-      result = char_detected(img)
-      return(result)
-    },
-    error=function(e) {
-      return(NA)
-    },
-    warning=function(w) {
-      return(result)
+  #cut grubo 
+  grubo_obrez = function(red_boundary, img_data){
+    min_redX = min(red_boundary$x)
+    max_redX = max(red_boundary$x)
+    min_redY = min(red_boundary$y)
+    max_redY = max(red_boundary$y)
+    img_data = dplyr::filter(img_data, img_data$x > min_redX, img_data$x < max_redX, 
+                             img_data$y > min_redY, img_data$y < max_redY)
+    return(img_data)
+  }
+  # obrez
+  obrez = function(red_boundary, img_data){
+    img_data_obrez_list = list()
+    for (i in unique(red_boundary$x)){
+      date_minmax = red_boundary[red_boundary$x == i,]
+      minY = min(date_minmax$y)
+      maxY = max(date_minmax$y)
+      col_img_data = list(tibble(x = i, y = seq(from = minY, to = maxY), red = NA, green = NA, blue = NA))
+      img_data_obrez_list = append(img_data_obrez_list, col_img_data)
     }
-  )
+    img_data_obrez = as.data.frame(do.call(rbind, img_data_obrez_list))
+    img_data_obrez = semi_join(img_data, img_data_obrez, by = c('x','y'))
+    img_data_obrez = anti_join(img_data_obrez, red_boundary, by = c('x','y'))
+    return(img_data_obrez)
+  } 
+  # new for circle
+  radius_area_diam = function(a){
+    aa = data.frame(x = c(a[,1]),
+                    y = c(a[,2]))
+    aa_2 = orderPoints(x = aa$x, y = aa$y, clockwise = F)
+    aa = aa[aa_2, ]
+    w = owin(poly = aa)
+    min_charR = incircle(w)$r
+    max_charR = boundingradius(w)
+    diam = diameter(w)
+    area_char = area(w)
+    data_exp = data.frame(min_charR = min_charR, max_charR = max_charR, diam = diam,
+                          area_char = area_char)
+    return(data_exp)
+  }
+  
+  # obolochka detected and cut 
+  cut_and_detected = function(img_data, red.border, green.border, red.char, green.char){
+    img_del = max(img_data$x) * max(img_data$y)
+    img_data = tibble(x = img_data$x[1 : img_del], y = img_data$y[1 : img_del], red = img_data$value[1 : img_del], 
+                      green = img_data$value[(img_del + 1) : (img_del * 2)], 
+                      blue = img_data$value[(img_del * 2 + 1) : (img_del * 3)])
+    remove(img_del)
+    ### data cutting
+    red_boundary = red_bond(img_data, red.border, green.border)
+    
+    img_data = grubo_obrez(red_boundary, img_data)
+    
+    img_data = obrez(red_boundary, img_data)
+    remove(red_boundary)
+    
+    ### char detected
+    # moving average
+    img_data = mutate(img_data, meanRGcolor = (rollmean(img_data$red, 100, na.pad = T) 
+                                               + rollmean(img_data$green, 100, na.pad = T))/2)
+    #char detected
+    img_data_char = transmute(img_data, x = img_data$x, y = img_data$y, 
+                              charcoal = ifelse(img_data$red < red.char & img_data$green < green.char & meanRGcolor < 99 |
+                                                  img_data$red < red.char & img_data$green < green.char & meanRGcolor >= 99,
+                                                yes = 1, no = 0))
+    img_data_char = na.omit(img_data_char)
+    
+    img_data_char_i = as.cimg(img_data_char, v.name = 'charcoal')
+    img_data_char_i = fillHull(img_data_char_i)
+    
+    labels=bwlabel(img_data_char_i)
+    # по окружностям более точный подход
+    a = ocontour(labels) # контур
+    a = a[lapply(a, function(z) length(z)) > 3]
+    a = a[lapply(a, function(z) sum(z[,1])) > 0]
+    a = a[lapply(a, function(z) sum(length(unique(z[,2])))) > 1]
+    a = a[lapply(a, function(z) sum(length(unique(z[,1])))) > 1]
+    k = lapply(a, function(z) radius_area_diam(z))
+    labels =  as.data.frame(do.call(rbind, k))
+  }
+  
+  char_detected = function(img, red.border, green.border, red.char, green.char, size.blur){
+    img <- resize(img,round(width(img)/1),round(height(img)/1))
+    img = medianblur(img, size.blur, threshold = 50)
+    img_data = as.data.frame(img)
+    ugol = cut_and_detected(img_data, red.border, green.border, red.char, green.char)
+  }
+  
+  char_detected_tryCatch <- function(img, red.border, green.border, red.char, green.char, size.blur){
+    tryCatch(
+      {
+        result = char_detected(img, red.border, green.border, red.char, green.char, size.blur)
+        return(result)
+      },
+      error=function(e) {
+        return(NA)
+      },
+      warning=function(w) {
+        return(result)
+      }
+    )
+  }
+  
+  ###
+  
+  packages_for_chardetected = c('imager', 'tibble', 'EBImage', 'dplyr', 'zoo', 'contoureR', 'spatstat.geom')
+  
+  
+  cl <- makeCluster(cl)    # Создаем «кластер» на n потоков
+  registerDoParallel(cl) # Регистрируем «кластер»
+  
+  ugol_tab_all = foreach(i = 1:length(name_images), .combine = "rbind", .packages = packages_for_chardetected) %dopar% {
+    img = load.image(name_images[i])
+    ugol_tab_one = char_detected(img, red.border, green.border, red.char, 
+                                 green.char, size.blur) #char_detected(img)
+    ugol_tab_one = mutate(ugol_tab_one, id_1 = name_of_image[i])
+    #ugol_tab_one = ugol_tab_one[-1, ]
+  }
+  stopCluster(cl)
+  return(ugol_tab_all)
+}
+### charcoal_sum
+charcoal_sum = function(data_char, min.diametr, n.samples, n.images){
+  data_char = data_char[data_char$diam > min.diametr,]
+  charcoal_sum = tibble(depth = 1, num_char = 1)[-1, ]
+  k = 0
+  n.images = n.images - 1
+  for (i in 1 : n.samples){
+    charcoal_sum_once = 0
+    for (j in 0:n.images){
+      charcoal_sum_once = charcoal_sum_once + (length(data_char[data_char$id_1 == i+j + k,]$id_1))
+    }
+    k = k+6
+    charcoal_sum_once_data = data.frame(depth = i,num_char = charcoal_sum_once)
+    charcoal_sum = rbind(charcoal_sum, charcoal_sum_once_data)
+  }
+  return(charcoal_sum)
 }
 
+######
+######
+######
+#ВНИМАНИЕ! ДЛЯ РАБОТЫ используйте только те функции, что указаны ниже.
+### таблица с характеристиками каждой частицы
+#img.path - путь к папке с фотографиями образцов, в которых требуется подсчитать уголь
+#red.border - значение интенсивности (от 0 до 1), по которой выделяется граница изображения по красному цвету
+#green.border - значение интенсивности (от 0 до 1), по которой выделяется граница изображения по зеленому цвету
+#red.char - значение интенсивности (от 0 до 1), по которой выделяется уголек по красному цвету
+#green.char -  значение интенсивности (от 0 до 1), по которой выделяется уголек по зеленому цвету
+#size.blur - размер сглаживающего окна (medianblur)
+#cl - количетсво кластеров для парралельного подсчета.
+data_char = simple_char(img.path = '', 
+                red.border = 0.5, green.border = 0.5, red.char = 0.23, 
+                green.char = 0.23, size.blur = 3, cl = 2)
 
-name_images = (list.files('C:/Users/Omen/Desktop/ucheba & etl/bolota/for_R/ugol_izobr/izobr/izobr_for_work/exp/exp72/test_12_izobr',
-                          full.names = TRUE)) # name of puti
-name_images = str_sort(name_images, numeric = TRUE)
-name_of_image = (list.files('C:/Users/Omen/Desktop/ucheba & etl/bolota/for_R/ugol_izobr/izobr/izobr_for_work/exp/exp72/test_12_izobr',
-                            full.names = FALSE))
-name_of_image = as.numeric(gsub('.*?([0-9]+).*', '\\1', name_of_image)) %>% 
-  sort()# name of images
-
-packages_for_chardetected = c('imager', 'tibble', 'EBImage', 'dplyr', 'zoo', 'contoureR', 'spatstat.geom')
-
-
-cl <- makeCluster(1)    # Создаем «кластер» на n потоков
-registerDoParallel(cl) # Регистрируем «кластер»
-
-Sys.time()
-ugol_tab_all = foreach(i = 1:length(name_images), .combine = "rbind", .packages = packages_for_chardetected) %dopar% {
-  img = load.image(name_images[i])
-  ugol_tab_one = char_detected(img) #char_detected(img)
-  ugol_tab_one = mutate(ugol_tab_one, id_1 = name_of_image[i])
-  #ugol_tab_one = ugol_tab_one[-1, ]
-}
-Sys.time()
-stopCluster(cl)
+### подсчет угля
+# data_char - данные, которые были получены при подсчете
+#min.diametr - удаление случайно посчитанных темных пикселей, размер которых меньше диаметра ячей сетки при промывке (в px)
+#n.samples - количество образцов
+#n.images - количество изображений на образец
+aa = charcoal_sum(data_char, min.diametr = 15, n.samples = 20, n.images = 6)
