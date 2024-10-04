@@ -94,8 +94,8 @@ simple_char = function(img.path, red.border, green.border, red.char, green.char,
                                                + rollmean(img_data$green, 100, na.pad = T))/2)
     #char detected
     img_data_char = transmute(img_data, x = img_data$x, y = img_data$y, 
-                              charcoal = ifelse(img_data$red < red.char & img_data$green < green.char & meanRGcolor < 99 |
-                                                  img_data$red < red.char & img_data$green < green.char & meanRGcolor >= 99,
+                              charcoal = ifelse(img_data$red < img_data$blue / 1.1 & img_data$red < red.char & img_data$green < green.char & meanRGcolor < 99 |
+                                                  img_data$red < img_data$blue / 1.1 & img_data$red < red.char & img_data$green < green.char & meanRGcolor >= 99,
                                                 yes = 1, no = 0))
     img_data_char = na.omit(img_data_char)
     
