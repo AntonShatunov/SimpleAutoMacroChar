@@ -14,7 +14,8 @@ library(contoureR)
 library(spatstat.geom)
 
 ##
-simple_char = function(img.path, red.border, green.border, red.char, green.char, size.blur, cl){
+simple_char = function(img.path, red.border, green.border, red.char, green.char,
+                       size.blur, cl, l.blue){
   name_images = (list.files(img.path, full.names = TRUE)) # name of puti
   name_images = str_sort(name_images, numeric = TRUE)
   name_of_image = (list.files(img.path, full.names = FALSE))
@@ -74,7 +75,8 @@ simple_char = function(img.path, red.border, green.border, red.char, green.char,
   }
   
   # obolochka detected and cut 
-  cut_and_detected = function(img_data, red.border, green.border, red.char, green.char){
+  cut_and_detected = function(img_data, red.border, green.border, red.char, green.char,
+                              l.blue){
     img_del = max(img_data$x) * max(img_data$y)
     img_data = tibble(x = img_data$x[1 : img_del], y = img_data$y[1 : img_del], red = img_data$value[1 : img_del], 
                       green = img_data$value[(img_del + 1) : (img_del * 2)], 
@@ -94,8 +96,8 @@ simple_char = function(img.path, red.border, green.border, red.char, green.char,
                                                + rollmean(img_data$green, 100, na.pad = T))/2)
     #char detected
     img_data_char = transmute(img_data, x = img_data$x, y = img_data$y, 
-                              charcoal = ifelse(img_data$red < img_data$blue / 1.1 & img_data$red < red.char & img_data$green < green.char & meanRGcolor < 99 |
-                                                  img_data$red < img_data$blue / 1.1 & img_data$red < red.char & img_data$green < green.char & meanRGcolor >= 99,
+                              charcoal = ifelse(img_data$red < img_data$blue / l.blue & img_data$red < red.char & img_data$green < green.char & meanRGcolor < 99 |
+                                                  img_data$red < img_data$blue / l.blue & img_data$red < red.char & img_data$green < green.char & meanRGcolor >= 99,
                                                 yes = 1, no = 0))
     img_data_char = na.omit(img_data_char)
     
@@ -113,17 +115,20 @@ simple_char = function(img.path, red.border, green.border, red.char, green.char,
     labels =  as.data.frame(do.call(rbind, k))
   }
   
-  char_detected = function(img, red.border, green.border, red.char, green.char, size.blur){
+  char_detected = function(img, red.border, green.border, red.char, green.char, 
+                           size.blur, l.blue){
     img <- resize(img,round(width(img)/1),round(height(img)/1))
     img = medianblur(img, size.blur, threshold = 50)
     img_data = as.data.frame(img)
-    ugol = cut_and_detected(img_data, red.border, green.border, red.char, green.char)
+    ugol = cut_and_detected(img_data, red.border, green.border, red.char, green.char, l.blue)
   }
   
-  char_detected_tryCatch <- function(img, red.border, green.border, red.char, green.char, size.blur){
+  char_detected_tryCatch <- function(img, red.border, green.border, red.char, 
+                                     green.char, size.blur, l.blue){
     tryCatch(
       {
-        result = char_detected(img, red.border, green.border, red.char, green.char, size.blur)
+        result = char_detected(img, red.border, green.border, red.char, 
+                               green.char, size.blur, l.blue)
         return(result)
       },
       error=function(e) {
@@ -146,7 +151,7 @@ simple_char = function(img.path, red.border, green.border, red.char, green.char,
   ugol_tab_all = foreach(i = 1:length(name_images), .combine = "rbind", .packages = packages_for_chardetected) %dopar% {
     img = load.image(name_images[i])
     ugol_tab_one = char_detected(img, red.border, green.border, red.char, 
-                                 green.char, size.blur) #char_detected(img)
+                                 green.char, size.blur, l.blue) #char_detected(img)
     ugol_tab_one = mutate(ugol_tab_one, id_1 = name_of_image[i])
     #ugol_tab_one = ugol_tab_one[-1, ]
   }
@@ -162,7 +167,7 @@ charcoal_sum = function(data_char, min.diametr, n.samples, n.images){
   for (i in 1 : n.samples){
     charcoal_sum_once = 0
     for (j in 0:n.images){
-      charcoal_sum_once = charcoal_sum_once + (length(data_char[data_char$id_1 == i+j + k,]$id_1))
+      charcoal_sum_once = charcoal_sum_once + (length(data_char[data_char$id_1 == 0+j + k,]$id_1))
     }
     k = k+6
     charcoal_sum_once_data = data.frame(depth = i,num_char = charcoal_sum_once)
@@ -182,14 +187,24 @@ charcoal_sum = function(data_char, min.diametr, n.samples, n.images){
 #red.char - значение интенсивности (от 0 до 1), по которой выделяется уголек по красному цвету
 #green.char -  значение интенсивности (от 0 до 1), по которой выделяется уголек по зеленому цвету
 #size.blur - размер сглаживающего окна (medianblur)
+#l.blue - насколько интенсивность синего цвета должна быть выше красного и зеленого
 #cl - количетсво кластеров для парралельного подсчета.
+Sys.time()
 data_char = simple_char(img.path = '', 
                 red.border = 0.5, green.border = 0.5, red.char = 0.23, 
-                green.char = 0.23, size.blur = 3, cl = 2)
-
+                green.char = 0.23, size.blur = 3, l.blue = 1.3, cl = 14)
+write_xlsx(data_char, '')
+Sys.time()
 ### подсчет угля
 # data_char - данные, которые были получены при подсчете
 #min.diametr - удаление случайно посчитанных темных пикселей, размер которых меньше диаметра ячей сетки при промывке (в px)
 #n.samples - количество образцов
 #n.images - количество изображений на образец
-aa = charcoal_sum(data_char, min.diametr = 15, n.samples = 20, n.images = 6)
+#data_char = readxl::read_xlsx('')
+aa = charcoal_sum(data_char, min.diametr = 15, n.samples = 150, n.images = 6)
+
+plot(aa$depth, aa$num_char, type = 'l')
+
+
+write_xlsx(aa, '')
+
